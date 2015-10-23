@@ -1,6 +1,6 @@
 ##IO_FUNCTIONS:
 
-  magic_open --> François Serra, open a compressed file functioni
+  magic_open --> François Serra, open a compressed file
   	Input: Filepath
 	Return: Filehandle
 
