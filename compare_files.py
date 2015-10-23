@@ -1,145 +1,125 @@
 import re
-import sys
-import optparse
-import gzip
-
-
-parser = optparse.OptionParser()
-parser.add_option('-o', '--output',
-                                    dest="output_filename",
-                                    default="default.out",
-                                    )
-parser.add_option('-i', '--input',
-                                    dest= "input_filename",
-                                    )
-parser.add_option('-d', '--db_list',
-                                    dest="db_list",
-                                    default="default.db_list",
-                                    )
-parser.add_option('-c', '--column_number',
-                                    dest="column_number",
-                                    default = 8,
-                                    )
+import sys, os
+import argparse
+import bz2, gzip, zipfile, tarfile
+import functions.IO_functions as IO_functions
+import functions.vcf_functions as vcf_functions
 
 
 
+def main():
+    options = get_options()
+    
 
-options, remainder = parser.parse_args()
-list_of_files = options.db_list.split(",")
-column_to_join = int(options.column_number) - 1
-def compare_positions(pos_a,pos_b):
-    if pos_a > pos_b:
-        return(0)
-    elif pos_a < pos_b:
-        return(1)
-    else:
-        return(2)
-
-def remove_col(list_to_remove,column_number):
-    col_cont=0
-    to_return_list = list()
-    while col_cont < column_number:
-        to_return_list.append(list_to_remove[col_cont])
-        col_cont = col_cont+1
-    col_cont = col_cont+1
-    while col_cont < len(list_to_remove):
-        to_return_list.append(list_to_remove[col_cont])
-        col_cont=col_cont+1
-    return(to_return_list)
-
-
-#Open files and merge headers
-if str(options.input_filename)[len(str(options.input_filename))-2:len(str(options.input_filename))] == "gz":
+    #Open files and merge headers
     try:
-        file_a = gzip.open(options.input_filename,"r")
-    except:
-        sys.exit("Could not open main vcf file to annotate " + options.input_filename + "check option " + options.input_filename)
-else:
+        main_file = IO_functions.magic_open(options.input_filename, 'r')
+    except IOError:
+        sys.exit('Could not open main vcf file to annotate %s check option %s'
+                 % (options.input_filename, options.input_filename))
+
     try:
-        file_a = open(options.input_filename,"r")
-    except:
-        sys.exit("Could not open main vcf file to annotate " + options.input_filename + " check option " +options.input_filename)
+        output_file = open(options.output_filename, 'w')
+    except IOError:
+        sys.exit('Could not open output file %s for some reason, check path'
+                 % (options.output_filename))
 
-try:
-    output_file = open(options.output_filename,"w")
-except:
-    sys.exit("Could not open output file " + options.output_filename +" for some reason, check output file")
-list_of_handles = list()
-list_of_lines = list()
+    list_of_handles = IO_functions.filenames2filehandles(options.db_list)
 
-for a in list_of_files:
-    if str(a)[len(a)-2:len(a)] == "gz":
-        try:
-            list_of_handles.append(gzip.open(a,"r"))
-        except:
-            sys.exit("could not open gzipped file " +a +" wrong input filename\n")
+
+    main_metadata, main_header = vcf_functions.get_metadata(main_file)
+
+
+
+    if options.merge_headers :
+        for annotate_filehandle in list_of_handles:
+            annotate_metadata, annotate_header = vcf_functions.get_metadata(annotate_filehandle)    
+            main_metadata = main_metadata + annotate_metadata
+
+    #Avoid duplicate metadata in output file.
+    i=0
+    while i < (len(main_metadata)-1): 
+        if main_metadata[i] not in main_metadata[0:i]:
+            output_file.write(main_metadata[i])
+        i=i+1
+
+    output_file.write(main_header)
+
+    for file in list_of_handles:
+        file.close()
+    main_file.close()
+    try:
+        main_file = IO_functions.magic_open(options.input_filename, 'r')
+    except IOError:
+        sys.exit('Could not open main vcf file to annotate %s check option %s'
+                 % (options.input_filename, options.input_filename))
+
+    list_of_handles = IO_functions.filenames2filehandles(options.db_list)
+
+
+    #Now we have n vcfs, need to join them
+    for main_line in main_file:
+        main_line.rstrip()
+        if not main_line.startswith('#'):
+            main_line_list = main_line.split('\t')
+            main_pos = int(main_line_list[1])
+            for fhandler in list_of_handles:
+                while True:
+                    try:
+                        # te quito la funcion porque implica que hagas 6 tests en vez de 3
+                        annotate_line_list = fhandler.next().split('\t')
+                        if not annotate_line_list[0].startswith('#'):
+                            annotate_pos = int(annotate_line_list[1])
+                            if main_pos > annotate_pos:
+                                continue
+                            elif main_pos < annotate_pos:
+                                break
+                            else:
+                            # Any of ALT alleles matches ANY of ALT alleles (because of multiallelic)
+				
+                                if bool(set(annotate_line_list[4].split(',')) & set(main_line_list[4].split(','))):
+                                    if main_line_list[3] == annotate_line_list[3]:
+	                                main_line_list[2] = main_line_list[2] + ';' + annotate_line_list[2].rstrip()
+            	                        # esto nunca lo necesita en el ejemplo que me distes...
+                                        main_line_list[7] = main_line_list[7] + ';' +annotate_line_list[7].rstrip()
+                                        main_line_list[2] = re.sub('^.;', '', main_line_list[2])
+                                        main_line_list[7] = re.sub('^.;', '', main_line_list[7])
+                                        break
+                        else:
+                            continue
+                    except StopIteration:
+                        fhandler.close()
+                        list_of_handles.remove(fhandler)
+                        break
+         
+            output_file.write(('\t'.join(main_line_list)).rstrip()+'\n')
+
+def valid_db_file(arg):
+    if not os.path.isfile(arg):
+        raise IOError('The db file %s does not exist!' % arg)
     else:
-        try:
-            list_of_handles.append(open(a,"r"))
-        except:
-            sys.exit("could not open file plain texplain text" + a +" wrong input filename\n")
-
-for a in list_of_handles:
-    list_of_lines.append(a.readline())
-
-
-metadata_a = list()
-line_a = file_a.readline()
-while line_a[0:2]=="##":
-    metadata_a.append(line_a)
-    line_a =file_a.readline()
-if line_a[0] == "#":
-    header_a = line_a
-
-file_counter=0
-while file_counter < len(list_of_files):
-    while list_of_lines[file_counter][0:2] =="##":
-        metadata_a.append(list_of_lines[file_counter])
-        list_of_lines[file_counter] = list_of_handles[file_counter].readline()
-    file_counter=file_counter+1
-
-for a in metadata_a:
-    output_file.write(a)
-try:
-    output_file.write(header_a)
-except:
-    #VCF_has_no_header
-    output_file.write("#NO HEADER\n")
+        return arg
+    
+def get_options():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-o', '--output',
+                        dest='output_filename',
+                        default='out',
+                        )
+    parser.add_argument('-i', '--input',
+                        dest='input_filename',
+                        default='inp',
+                        )
+    parser.add_argument('-d', '--db_list', nargs='+', dest= 'db_list',
+                        required=True, metavar='FILE',
+                        type=str)
+    parser.add_argument('-m', '--merge_headers', dest = 'merge_headers',
+                        required = False, default = True)
+                       
+    options = parser.parse_args()
+    
+    return options
 
 
-file_counter=0
-list_of_lines_as_lists = list()
-while file_counter < len(list_of_files):
-    list_of_lines_as_lists.append(list_of_handles[file_counter].readline().split("\t"))
-    file_counter = file_counter+1
-#Now we have n vcfs, need to join them
-
-
-
-for line_a in file_a:
-    line_a_as_list = line_a.split("\t")
-    file_counter=0
-    while file_counter < len(list_of_files):
-        if list_of_lines_as_lists[file_counter][0] == '':
-            list_of_files =remove_col(list_of_files,file_counter)
-            list_of_lines_as_lists = remove_col(list_of_lines_as_lists,file_counter)
-            list_of_handles[file_counter].close()
-            list_of_handles = remove_col(list_of_handles,file_counter)
-        else:
-            compare_value=compare_positions(line_a_as_list[1],list_of_lines_as_lists[file_counter][1])
-            if compare_value == 0:
-                list_of_lines_as_lists[file_counter] = list_of_handles[file_counter].readline().split("\t")
-            elif compare_value ==1:
-                file_counter = file_counter +1
-            elif compare_value == 2:
-                if line_a_as_list[4] == list_of_lines_as_lists[file_counter][4]:
-                    line_a_as_list[column_to_join] = line_a_as_list[column_to_join]+";"+list_of_lines_as_lists[file_counter][column_to_join]
-                    line_a_as_list[2] =re.subn("^.;","",line_a_as_list[2])[0]
-                    line_a = "\t".join(line_a_as_list)
-                    list_of_lines_as_lists[file_counter] = list_of_handles[file_counter].readline().split("\t")
-                else:
-                    list_of_lines_as_lists[file_counter] = list_of_handles[file_counter].readline().split("\t")
-    output_file.write(line_a)
-
-
-
+if __name__ == "__main__":
+    exit(main())
