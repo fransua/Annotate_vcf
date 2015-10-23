@@ -2,9 +2,7 @@ import re
 import sys, os
 import argparse
 import bz2, gzip, zipfile, tarfile
-import functions.IO_functions as IO_functions
-import functions.vcf_functions as vcf_functions
-
+from functions import IO_functions, vcf_functions
 
 
 def main():
